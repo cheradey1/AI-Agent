@@ -1,0 +1,215 @@
+using System;
+using System.Collections.Generic;
+using System.Net.Http;
+using System.Text;
+using System.Threading.Tasks;
+using Newtonsoft.Json;
+using UnityEngine; // For Debug.LogError
+using System.Linq; // For TakeLast
+
+namespace UnityAIAgent
+{
+    public class OpenAIService : IAIService
+    {
+        // Створюємо новий HttpClient для кожного запиту
+        private readonly AIAgentSettings _settings;
+        private readonly string _apiUrl = "https://api.openai.com/v1/chat/completions";
+
+        public OpenAIService(AIAgentSettings settings)
+        {
+            _settings = settings;
+        }
+
+        public bool IsConfigured() => _settings != null && !string.IsNullOrEmpty(_settings.openAIApiKey);
+        public string GetServiceName() => "OpenAI";
+
+        public async Task<AIResponse> QueryAI(string prompt, List<string> chatHistory)
+        {
+            if (!IsConfigured())
+                return new AIResponse { IsSuccess = false, ErrorMessage = "OpenAI API key not configured." };
+
+            try
+            {
+                // Створення нового HttpClient для кожного запиту
+                var httpClient = new HttpClient();
+                httpClient.Timeout = TimeSpan.FromSeconds(120); // Збільшений тайм-аут
+                httpClient.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", _settings.openAIApiKey);
+
+                var messages = new List<object> { new { role = "system", content = _settings.systemPrompt } };
+                foreach (var entry in chatHistory.TakeLast(_settings.maxHistoryLength)) 
+                {
+                    var parts = entry.Split(new[] { ": " }, 2, StringSplitOptions.None);
+                    string role = parts[0].ToLower();
+                    string content = parts.Length > 1 ? parts[1] : "";
+                    if (role == "user") messages.Add(new { role = "user", content = content });
+                    else if (role == "ai" || role == "assistant") messages.Add(new { role = "assistant", content = content });
+                }
+                messages.Add(new { role = "user", content = prompt });
+
+                var requestBody = new
+                {
+                    model = _settings.modelName,
+                    messages = messages,
+                    temperature = _settings.temperature,
+                    //max_tokens = 4000 // Consider making this configurable
+                };
+                string jsonPayload = JsonConvert.SerializeObject(requestBody);
+                var httpContent = new StringContent(jsonPayload, Encoding.UTF8, "application/json");
+                
+                HttpResponseMessage response = await httpClient.PostAsync(_apiUrl, httpContent);
+                string resultJson = await response.Content.ReadAsStringAsync();
+                
+                // Якщо отримуємо помилку про неіснуючу модель, спробуємо використати запасну модель
+                if (!response.IsSuccessStatusCode)
+                {
+                    if (resultJson.Contains("model_not_found"))
+                    {
+                        Debug.LogWarning($"Модель '{_settings.modelName}' не знайдена. Спроба використати запасну модель 'gpt-3.5-turbo'.");
+                        
+                        var fallbackRequestBody = new
+                        {
+                            model = "gpt-3.5-turbo",
+                            messages = messages,
+                            temperature = _settings.temperature
+                        };
+                        
+                        string fallbackJsonPayload = JsonConvert.SerializeObject(fallbackRequestBody);
+                        var fallbackHttpContent = new StringContent(fallbackJsonPayload, Encoding.UTF8, "application/json");
+                        
+                        response = await httpClient.PostAsync(_apiUrl, fallbackHttpContent);
+                        resultJson = await response.Content.ReadAsStringAsync();
+                    }
+                    else if (resultJson.Contains("insufficient_quota"))
+                    {
+                        Debug.LogWarning("Quota exceeded. The API key has reached its usage limit.");
+                        return new AIResponse { 
+                            IsSuccess = false, 
+                            ErrorMessage = "Вичерпано ліміт використання API ключа OpenAI. Перевірте ваш тарифний план або використайте інший ключ."
+                        };
+                    }
+                }
+
+                if (!response.IsSuccessStatusCode)
+                {
+                    string errorMessage = $"API Error: {response.StatusCode}. Details: {resultJson}";
+                    
+                    // Додаємо корисну підказку для помилок з моделями
+                    if (resultJson.Contains("model_not_found"))
+                    {
+                        errorMessage += "\n\nПорада: Відкрийте вікно налаштувань (Window > AI Assistant > Settings) " + 
+                                       "і оновіть назву моделі на одну з актуальних: 'gpt-4o', 'gpt-4o-mini', 'gpt-4.1', або 'gpt-3.5-turbo'. " +
+                                       "Також можете використати команду 'Перевірити доступні моделі GPT' для отримання повного списку.";
+                    }
+                    else if (resultJson.Contains("insufficient_quota"))
+                    {
+                        errorMessage += "\n\nПорада: Ваш API ключ вичерпав ліміт використання. Спробуйте наступне:\n" +
+                                       "1. Перевірте обліковий запис на https://platform.openai.com/account/usage\n" +
+                                       "2. Поповніть баланс або оновіть тарифний план\n" +
+                                       "3. Використайте інший API ключ\n" +
+                                       "4. Спробуйте використати модель з нижчою вартістю (наприклад, gpt-3.5-turbo)";
+                    }
+                    
+                    return new AIResponse { IsSuccess = false, ErrorMessage = errorMessage };
+                }
+
+                var responseObject = JsonConvert.DeserializeObject<dynamic>(resultJson);
+                string aiContent = responseObject.choices[0].message.content;
+                return new AIResponse { Content = aiContent, IsSuccess = true };
+            }
+            catch (HttpRequestException e)
+            {
+                 Debug.LogError($"HTTP Request Error: {e.Message} - {e.StackTrace}");
+                return new AIResponse { IsSuccess = false, ErrorMessage = $"Network error: {e.Message}" };
+            }
+            catch (JsonException e)
+            {
+                Debug.LogError($"JSON Parsing Error: {e.Message} - {e.StackTrace}");
+                return new AIResponse { IsSuccess = false, ErrorMessage = $"Error parsing AI response: {e.Message}" };
+            }
+            catch (Exception e)
+            {
+                Debug.LogError($"Generic Error in OpenAIService: {e.Message} - {e.StackTrace}");
+                return new AIResponse { IsSuccess = false, ErrorMessage = $"An unexpected error occurred: {e.Message}" };
+            }
+        }
+
+        /// <summary>
+        /// Перевіряє та повертає список доступних моделей для API ключа користувача
+        /// </summary>
+        public async Task<List<string>> CheckAvailableModels()
+        {
+            List<string> availableModels = new List<string>();
+            
+            if (!IsConfigured())
+                return availableModels;
+                
+            try
+            {
+                var httpClient = new HttpClient();
+                httpClient.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", _settings.openAIApiKey);
+                
+                HttpResponseMessage response = await httpClient.GetAsync("https://api.openai.com/v1/models");
+                string resultJson = await response.Content.ReadAsStringAsync();
+                
+                if (response.IsSuccessStatusCode)
+                {
+                    var responseObject = JsonConvert.DeserializeObject<dynamic>(resultJson);
+                    foreach (var model in responseObject.data)
+                    {
+                        string modelId = model.id;
+                        string modelIdStr = modelId.ToString();
+                        if (modelIdStr.StartsWith("gpt-"))
+                        {
+                            availableModels.Add(modelIdStr);
+                        }
+                    }
+                    
+                    // Після отримання всіх моделей автоматично оновлюємо список рекомендованих моделей
+                    UpdateRecommendedModels(availableModels);
+                }
+                else
+                {
+                    Debug.LogError($"Помилка при отриманні списку моделей: {response.StatusCode} - {resultJson}");
+                }
+            }
+            catch (Exception ex)
+            {
+                Debug.LogError($"Помилка при перевірці доступних моделей: {ex.Message}");
+            }
+            
+            return availableModels;
+        }
+        
+        /// <summary>
+        /// Оновлює список рекомендованих моделей на основі доступних для користувача
+        /// </summary>
+        private void UpdateRecommendedModels(List<string> availableModels)
+        {
+            // Перевіряємо, чи є доступ до основних моделей
+            bool hasGpt4o = availableModels.Any(m => m.StartsWith("gpt-4o"));
+            bool hasGpt4_1 = availableModels.Any(m => m.StartsWith("gpt-4.1"));
+            bool hasGpt35Turbo = availableModels.Any(m => m == "gpt-3.5-turbo");
+            
+            // Визначаємо рекомендовану модель на основі доступних моделей
+            string recommendedModel = "gpt-3.5-turbo"; // За замовчуванням
+            
+            if (hasGpt4o)
+            {
+                recommendedModel = "gpt-4o";
+            }
+            else if (hasGpt4_1)
+            {
+                recommendedModel = "gpt-4.1";
+            }
+            
+            // Записуємо рекомендацію в лог для користувача
+            Debug.Log($"Рекомендована модель для вашого API ключа: {recommendedModel}");
+            
+            // Якщо поточна модель недоступна, пропонуємо змінити її на рекомендовану
+            if (!availableModels.Contains(_settings.modelName))
+            {
+                Debug.LogWarning($"Поточна модель '{_settings.modelName}' недоступна для вашого API ключа. " +
+                                $"Рекомендуємо використовувати '{recommendedModel}'.");
+            }
+        }
+    }

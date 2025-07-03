@@ -1,0 +1,34 @@
+{
+  "name": "com.yourcompany.unityaichatagent",
+  "displayName": "AI Agent",
+  "version": "1.0.0",
+  "unity": "2021.3",
+  "description": "AI-помічник для Editor з інтеграцією OpenAI GPT-4 та Anthropic Claude, llama3, спрощеним чат-інтерфейсом, функціями генерації сцен, паузи для уточнення, пошуку ресурсів, індикаторами прогресу та збереженням результатів.",
+  "author": {
+    "name": "Cheradey1",
+    "email": "https://github.com/cheradey1"
+  },
+  "keywords": ["ai", "chatgpt", "claude", "unity", "editor", "assistant", "openai", "anthropic", "chat-interface", "scene-generator", "asset-search", "simplified-ui", "progress-indicator", "tooltips", "result-saving"],
+  "dependencies": {
+    "com.unity.nuget.newtonsoft-json": "3.0.2",
+    "com.unity.editorcoroutines": "1.0.0",
+    "com.unity.textmeshpro": "3.0.6"
+  },
+  "samples": [
+    {
+      "displayName": "Demo Scene",
+      "description": "Демонстраційна сцена з прикладами використання AI Agent",
+      "path": "Samples~/DemoScene"
+    },
+    {
+      "displayName": "Audio Examples",
+      "description": "Приклади інтеграції з аудіо системою",
+      "path": "Samples~/AudioExamples"
+    },
+    {
+      "displayName": "Basic Game Templates",
+      "description": "Приклади базових ігрових шаблонів для різних жанрів",
+      "path": "Samples~/GameTemplates"
+    }
+  ]
+}
